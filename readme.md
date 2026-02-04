@@ -71,6 +71,44 @@ Use this for **Active Projects**.
 
 ---
 
+## 📥 Importing Data
+
+Both the **Delivery Forecast** and **Risk Horizon** tools allow you to import data instead of manual entry. You can upload your team's historical throughput (**Pulse**) or current project progress (**Actuals**).
+
+### Supported Formats
+- **CSV** (`.csv`)
+- **Excel** (`.xlsx`)
+
+### File Structure
+The tool is designed for simplicity. It reads the **first column** of your file and expects each row to contain an integer representing the number of items completed in a single week.
+
+| Week | Throughput (Items) |
+| :--- | :--- |
+| Week 1 | 5 |
+| Week 2 | 3 |
+| Week 3 | 6 |
+| Week 4 | 4 |
+
+> **Note:** The header row is optional. The tool will skip non-numeric values and focus on the first column.
+
+### Example CSV
+Create a file named `pulse.csv` with the following content:
+```csv
+Items
+5
+3
+6
+4
+7
+```
+
+### Where to upload?
+1.  Navigate to **Delivery Forecast** or **Risk Horizon**.
+2.  Look for the **Upload Data** or **Upload Pulse/Actuals** tabs.
+3.  Drag and drop your file into the uploader.
+
+---
+
 ## 📄 License
 
 This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.

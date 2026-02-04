@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import random
@@ -18,6 +19,26 @@ st.markdown("""
     .reportview-container { background: #0e1117; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# --- HELPER: DATA LOADER ---
+def load_data_from_file(uploaded_file):
+    """Parses a CSV/Excel file and extracts the first column as a list of integers."""
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+
+        # We assume the data is in the first column
+        first_col = df.iloc[:, 0]
+
+        # Drop NaNs and convert to integers
+        clean_data = first_col.dropna().astype(int).tolist()
+        return clean_data
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return []
 
 
 # --- HELPER: PDF GENERATOR ---
@@ -100,12 +121,28 @@ def show_forecast():
         scope_max = st.number_input("Max Items (Worst Case)", value=17)
 
         st.subheader("2. Capability")
-        throughput_str = st.text_input("Team History (Pulse)", value="6,5,4,6,3,6,5,4,7")
 
-        try:
-            pulse = [int(x.strip()) for x in throughput_str.split(',') if x.strip()]
-        except:
-            pulse = [1]
+        # --- INPUT TABS ---
+        tab1, tab2 = st.tabs(["Manual Entry", "Upload Data"])
+
+        pulse = []
+
+        with tab1:
+            throughput_str = st.text_input("Team History (Pulse)", value="6,5,4,6,3,6,5,4,7",
+                                           help="Comma separated integers")
+            try:
+                pulse = [int(x.strip()) for x in throughput_str.split(',') if x.strip()]
+            except:
+                pulse = [1]
+
+        with tab2:
+            st.markdown("Upload a CSV/Excel with a single column of numbers (Throughput/Week).")
+            uploaded_file = st.file_uploader("Upload Throughput File", type=['csv', 'xlsx'])
+            if uploaded_file is not None:
+                pulse = load_data_from_file(uploaded_file)
+                if pulse:
+                    st.success(f"Loaded {len(pulse)} weeks of history.")
+                    st.write(f"Preview: {pulse[:5]}...")
 
         sims = st.number_input("Simulations", value=10000)
 
@@ -113,6 +150,9 @@ def show_forecast():
 
     if run_btn:
         with col_graph:
+            # Fallback if no data
+            if not pulse: pulse = [1]
+
             # --- LOGIC ---
             results = []
             for i in range(sims):
@@ -149,9 +189,10 @@ def show_forecast():
             st.pyplot(fig)
 
             # --- METRICS & PDF ---
+            pulse_preview = str(pulse[:10]) + "..." if len(pulse) > 10 else str(pulse)
             stats_text = (
                 f"SCOPE: {scope_min} - {scope_max} items\n"
-                f"TEAM PULSE: {throughput_str}\n\n"
+                f"TEAM PULSE: {pulse_preview}\n\n"
                 f"Option A (Aggressive): {int(p50)} Weeks (50% Chance)\n"
                 f"Option B (Likely):     {int(p85)} Weeks (85% Chance)\n"
                 f"Option C (Safe):       {int(p95)} Weeks (95% Chance)"
@@ -179,21 +220,45 @@ def show_horizon():
 
     with col_input:
         st.subheader("1. The Engine")
-        pulse_str = st.text_input("Pulse (History)", value="2, 5, 4, 6, 4, 3, 5")
-        try:
-            pulse_data = [int(x.strip()) for x in pulse_str.split(',') if x.strip()]
-        except:
-            pulse_data = [1]
+
+        # --- TABBED INPUT FOR PULSE ---
+        tab_pulse1, tab_pulse2 = st.tabs(["Manual Pulse", "Upload Pulse"])
+        pulse_data = []
+
+        with tab_pulse1:
+            pulse_str = st.text_input("Pulse (History)", value="2, 5, 4, 6, 4, 3, 5")
+            try:
+                pulse_data = [int(x.strip()) for x in pulse_str.split(',') if x.strip()]
+            except:
+                pulse_data = [1]
+
+        with tab_pulse2:
+            st.markdown("Upload history (e.g. last 50 weeks).")
+            pulse_file = st.file_uploader("Upload Pulse CSV", type=['csv', 'xlsx'], key="pulse_up")
+            if pulse_file:
+                pulse_data = load_data_from_file(pulse_file)
+                if pulse_data: st.success(f"Loaded {len(pulse_data)} weeks.")
 
         st.subheader("2. The Road")
-        actuals_str = st.text_input("Project Actuals (Comma separated)", value="2, 5, 4", placeholder="e.g. 3, 4")
-        if actuals_str.strip() == "":
-            project_actuals = []
-        else:
-            try:
-                project_actuals = [int(x.strip()) for x in actuals_str.split(',') if x.strip()]
-            except:
-                project_actuals = []
+
+        # --- TABBED INPUT FOR ACTUALS ---
+        tab_act1, tab_act2 = st.tabs(["Manual Actuals", "Upload Actuals"])
+        project_actuals = []
+
+        with tab_act1:
+            actuals_str = st.text_input("Project Actuals", value="2, 5, 4", placeholder="e.g. 3, 4")
+            if actuals_str.strip() != "":
+                try:
+                    project_actuals = [int(x.strip()) for x in actuals_str.split(',') if x.strip()]
+                except:
+                    project_actuals = []
+
+        with tab_act2:
+            st.markdown("Upload progress (weeks done so far).")
+            actuals_file = st.file_uploader("Upload Actuals CSV", type=['csv', 'xlsx'], key="act_up")
+            if actuals_file:
+                project_actuals = load_data_from_file(actuals_file)
+                if project_actuals: st.success(f"Loaded {len(project_actuals)} weeks.")
 
         total_scope = st.number_input("Total Scope", value=100)
         sims = st.number_input("Simulations", value=10000)
@@ -202,6 +267,9 @@ def show_horizon():
 
     if run_btn:
         with col_graph:
+            # Fallback
+            if not pulse_data: pulse_data = [1]
+
             # --- LOGIC ---
             current_week = len(project_actuals)
             items_done = sum(project_actuals)
@@ -321,9 +389,11 @@ def show_horizon():
                 st.metric("Option C (Safe)", fmt_week(w_95_exact), "95% Chance")
 
             # --- PDF REPORT ---
+            pulse_preview = str(pulse_data[:10]) + "..." if len(pulse_data) > 10 else str(pulse_data)
             stats_text = (
                 f"PROJECT STATUS: Week {current_week}\n"
-                f"ITEMS DONE: {items_done} / {total_scope}\n\n"
+                f"ITEMS DONE: {items_done} / {total_scope}\n"
+                f"PULSE DATA: {pulse_preview}\n\n"
                 f"Option A (Aggressive): {fmt_week(w_50_exact)} (50% Chance)\n"
                 f"Option B (Commercial): {fmt_week(w_85_exact)} (85% Chance)\n"
                 f"Option C (Safe):       {fmt_week(w_95_exact)} (95% Chance)"
