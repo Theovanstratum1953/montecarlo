@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  risk-horizon:
+    build: .
+    container_name: risk-horizon-app
+    ports:
+      - "8501:8501"
+    volumes:
+      # This allows them to edit the code locally if they want,
+      # without rebuilding the container (Optional, but nice for devs)
+      - ./:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
