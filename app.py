@@ -6,7 +6,7 @@ from matplotlib.ticker import MaxNLocator
 import random
 import io
 import tempfile
-from fpdf import FPDF
+from fpdf import FPDF, XPos, YPos
 
 # --- STREAMLIT CONFIGURATION ---
 st.set_page_config(page_title="Probabilistic Delivery Suite", layout="wide", page_icon="🎲")
@@ -46,17 +46,17 @@ def create_pdf(report_type, stats_text, chart_fig):
     """Generates a PDF report with the stats and the chart."""
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
+    pdf.set_font("helvetica", size=12)
 
     # Title
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt=f"Probabilistic Delivery Report: {report_type}", ln=1, align='C')
+    pdf.set_font("helvetica", 'B', 16)
+    pdf.cell(200, 10, text=f"Probabilistic Delivery Report: {report_type}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
     pdf.ln(10)
 
     # Stats Text
-    pdf.set_font("Arial", size=12)
+    pdf.set_font("helvetica", size=12)
     for line in stats_text.split('\n'):
-        pdf.cell(200, 8, txt=line, ln=1, align='L')
+        pdf.cell(200, 8, text=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
 
     # Chart Image
     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
@@ -64,7 +64,7 @@ def create_pdf(report_type, stats_text, chart_fig):
         pdf.image(tmpfile.name, x=10, y=pdf.get_y() + 10, w=190)
 
     # Output to bytes
-    return pdf.output(dest='S').encode('latin-1')
+    return bytes(pdf.output())
 
 
 # --- VIEW 1: HOME ---
