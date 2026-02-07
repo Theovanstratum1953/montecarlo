@@ -6,7 +6,9 @@ from matplotlib.ticker import MaxNLocator
 import random
 import io
 import tempfile
+import re
 from fpdf import FPDF, XPos, YPos
+from datetime import datetime
 
 # --- STREAMLIT CONFIGURATION ---
 st.set_page_config(page_title="Probabilistic Delivery Suite", layout="wide", page_icon="🎲")
@@ -14,400 +16,286 @@ st.set_page_config(page_title="Probabilistic Delivery Suite", layout="wide", pag
 # --- CSS STYLING ---
 st.markdown("""
 <style>
-    .big-font { font-size:20px !important; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; }
-    .reportview-container { background: #0e1117; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #2c3e50; color: white; }
+    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #34495e; }
+    [data-testid="stMetricValue"] { font-size: 28px; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# --- HELPER: DATA LOADER ---
+# --- GOVERNANCE HELPERS ---
+def get_molecular_status(data):
+    if not data: return "No Data", "grey", 0
+    avg = np.mean(data)
+    if avg > 20:
+        return "⚠️ ATOM ALERT: High volume suggests task-level slicing.", "orange", 40
+    if avg < 1:
+        return "⚠️ STAGNATION: Throughput is dangerously low.", "red", 20
+    return "✅ MOLECULAR DATA: Throughput suggests value-item delivery.", "#2ecc71", 100
+
+
+def clean_for_pdf(text):
+    if not text: return ""
+    return re.sub(r'[^\x00-\x7F]+', '', text).strip()
+
+
 def load_data_from_file(uploaded_file):
-    """Parses a CSV/Excel file and extracts the first column as a list of integers."""
     try:
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file)
-
-        # We assume the data is in the first column
-        first_col = df.iloc[:, 0]
-
-        # Drop NaNs and convert to integers
-        clean_data = first_col.dropna().astype(int).tolist()
-        return clean_data
+        return df.iloc[:, 0].dropna().astype(int).tolist()
     except Exception as e:
         st.error(f"Error reading file: {e}")
         return []
 
 
-# --- HELPER: PDF GENERATOR ---
-def create_pdf(report_type, stats_text, chart_fig):
-    """Generates a PDF report with the stats and the chart."""
-    pdf = FPDF()
+# --- PDF GENERATOR ---
+class RescueReport(FPDF):
+    def header(self):
+        self.set_font('helvetica', 'B', 15)
+        self.cell(100, 10, 'PROBABILISTIC DELIVERY AUDIT', align='L')
+        self.set_font('helvetica', '', 10)
+        self.cell(0, 10, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='R', new_x=XPos.LMARGIN,
+                  new_y=YPos.NEXT)
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('helvetica', 'I', 8)
+        self.cell(0, 10, f'Page {self.page_no()} - Confidential Actuarial Report', align='C')
+
+
+def create_enhanced_pdf(project_name, report_type, stats_dict, gate_info, commentary, chart_fig):
+    pdf = RescueReport()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("helvetica", size=12)
+    pdf.set_fill_color(44, 62, 80)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", 'B', 14)
+    pdf.cell(190, 12, f" PROJECT: {clean_for_pdf(project_name).upper()}", align='L', fill=True, new_x=XPos.LMARGIN,
+             new_y=YPos.NEXT)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(5)
 
-    # Title
-    pdf.set_font("helvetica", 'B', 16)
-    pdf.cell(200, 10, text=f"Probabilistic Delivery Report: {report_type}", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-    pdf.ln(10)
+    # Section 1: Integrity (Fixed Alignment)
+    pdf.set_font("helvetica", 'B', 12)
+    pdf.cell(190, 10, "1. DATA INTEGRITY & GOVERNANCE", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_font("helvetica", '', 11)
+    # Using specific widths to ensure Score stays on the same line but justified right
+    pdf.cell(140, 8, f"Status: {clean_for_pdf(gate_info['msg'])}")
+    pdf.cell(50, 8, f"Score: {gate_info['score']}/100", align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(5)
 
-    # Stats Text
-    pdf.set_font("helvetica", size=12)
-    for line in stats_text.split('\n'):
-        pdf.cell(200, 8, text=line, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+    # Section 2: Stats
+    pdf.set_font("helvetica", 'B', 12)
+    pdf.cell(190, 10, "2. ACTUARIAL FORECAST", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_font("helvetica", '', 11)
+    for key, val in stats_dict.items():
+        pdf.cell(95, 8, f"{key}:", border='B')
+        pdf.cell(95, 8, f"{val}", border='B', align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    # Chart Image
+    if commentary.strip():
+        pdf.ln(5)
+        pdf.set_font("helvetica", 'B', 12)
+        pdf.cell(190, 10, "3. SPECIALIST COMMENTARY", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_font("helvetica", 'I', 11)
+        pdf.multi_cell(190, 7, clean_for_pdf(commentary))
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-        chart_fig.savefig(tmpfile.name, format="png", bbox_inches='tight', dpi=100)
-        pdf.image(tmpfile.name, x=10, y=pdf.get_y() + 10, w=190)
-
-    # Output to bytes
+        chart_fig.savefig(tmpfile.name, format="png", bbox_inches='tight', dpi=150)
+        if pdf.get_y() > 160: pdf.add_page()
+        pdf.image(tmpfile.name, x=10, y=pdf.get_y() + 5, w=190)
     return bytes(pdf.output())
 
 
 # --- VIEW 1: HOME ---
 def show_home():
     st.title("🎲 Probabilistic Delivery Suite")
-    st.markdown("### Stop Guessing. Start Calculating.")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.info("### 1. The Strategy (Pre-Project)")
-        st.markdown("""
-        **"Can we afford this project?"**
-
-        Use the **Delivery Forecast** when you have a backlog range (e.g., 50-70 items) and need to set a budget or deadline *before* starting.
-
-        * **Output:** A Probability Histogram.
-        * **Answer:** "We are 85% sure this is a 12-week project."
-        """)
-        if st.button("Go to Delivery Forecast"):
-            st.session_state['page'] = 'forecast'
-            st.rerun()
-
-    with col2:
-        st.success("### 2. The Tactics (Active Project)")
-        st.markdown("""
-        **"When will we finish?"**
-
-        Use the **Risk Horizon** when the project is running. Input your weekly actuals to see the "Cone of Uncertainty" narrow over time.
-
-        * **Output:** A Dynamic Burn-up Chart.
-        * **Answer:** "Based on the last 4 weeks, we will land on Nov 15th."
-        """)
-        if st.button("Go to Risk Horizon"):
-            st.session_state['page'] = 'horizon'
-            st.rerun()
-
-
-# --- VIEW 2: DELIVERY FORECAST (The Histogram) ---
-def show_forecast():
-    st.title("🔮 Delivery Forecast (Pre-Project Strategy)")
-    st.markdown("[Back to Home]", unsafe_allow_html=True)
-    if st.button("← Home"):
-        st.session_state['page'] = 'home'
-        st.rerun()
-
+    st.markdown("## Fiduciary Governance for Software Capital")
     st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("### 1. The Strategy (Pre-Project)")
+        st.markdown(
+            "**'Can we afford this project?'**\n\nUse when you have a backlog range and need to set a budget before starting.")
+        if st.button("Go to Delivery Forecast", key="h_f"):
+            st.session_state['page'] = 'forecast';
+            st.rerun()
+    with c2:
+        st.success("### 2. The Tactics (Active Project)")
+        st.markdown(
+            "**'When will we finish?'**\n\nUse during execution. Input actuals to see the 'Cone of Uncertainty' narrow.")
+        if st.button("Go to Risk Horizon", key="h_h"):
+            st.session_state['page'] = 'horizon';
+            st.rerun()
+    st.markdown("---")
+    st.caption("A Project Rescue Instrument by Theo van Stratum, PhD")
 
-    col_input, col_graph = st.columns([1, 3])
 
-    with col_input:
+# --- VIEW 2: FORECAST ---
+def show_forecast():
+    st.title("🔮 Strategy Forecast")
+    if st.button("← Home"): st.session_state['page'] = 'home'; st.rerun()
+    proj_name = st.text_input("Project Name", value="New Initiative")
+    st.markdown("---")
+    col_in, col_gr = st.columns([1, 3])
+    with col_in:
         st.subheader("1. Scoping")
-        scope_min = st.number_input("Min Items (Best Case)", value=12)
-        scope_max = st.number_input("Max Items (Worst Case)", value=17)
-
+        s_min = st.number_input("Min Items", value=20)
+        s_max = st.number_input("Max Items", value=30)
         st.subheader("2. Capability")
-
-        # --- INPUT TABS ---
-        tab1, tab2 = st.tabs(["Manual Entry", "Upload Data"])
-
+        t1, t2 = st.tabs(["Manual Pulse", "Upload Pulse"])
         pulse = []
-
-        with tab1:
-            throughput_str = st.text_input("Team History (Pulse)", value="6,5,4,6,3,6,5,4,7",
-                                           help="Comma separated integers")
+        with t1:
+            p_str = st.text_area("Pulse History", value="4, 5, 2, 6, 0, 4")
             try:
-                pulse = [int(x.strip()) for x in throughput_str.split(',') if x.strip()]
+                pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
             except:
                 pulse = [1]
+        with t2:
+            p_file = st.file_uploader("Upload Pulse", type=['csv', 'xlsx'], key="f_up")
+            if p_file: pulse = load_data_from_file(p_file)
 
-        with tab2:
-            st.markdown("Upload a CSV/Excel with a single column of numbers (Throughput/Week).")
-            uploaded_file = st.file_uploader("Upload Throughput File", type=['csv', 'xlsx'])
-            if uploaded_file is not None:
-                pulse = load_data_from_file(uploaded_file)
-                if pulse:
-                    st.success(f"Loaded {len(pulse)} weeks of history.")
-                    st.write(f"Preview: {pulse[:5]}...")
-
+        commentary = st.text_area("Specialist's Commentary")
+        allow_zeros = st.checkbox("Include Black Swans (0s)", value=True)
         sims = st.number_input("Simulations", value=10000)
-
         run_btn = st.button("🚀 Run Monte Carlo")
 
     if run_btn:
-        with col_graph:
-            # Fallback if no data
-            if not pulse: pulse = [1]
-
-            # --- LOGIC ---
-            results = []
-            for i in range(sims):
-                total_work = random.randint(scope_min, scope_max)
-                weeks = 0
-                while total_work > 0:
-                    velocity = random.choice(pulse)
-                    if velocity <= 0: velocity = 1
-                    total_work -= velocity
-                    weeks += 1
-                results.append(weeks)
-
-            data = np.array(results)
-            p50 = np.percentile(data, 50)
-            p85 = np.percentile(data, 85)
-            p95 = np.percentile(data, 95)
-
-            # --- VISUALIZATION ---
+        if not allow_zeros: pulse = [x for x in pulse if x > 0]
+        msg, color, score = get_molecular_status(pulse)
+        results = []
+        for _ in range(sims):
+            tot, w = random.randint(s_min, s_max), 0
+            while tot > 0:
+                tot -= random.choice(pulse if pulse else [1]);
+                w += 1
+            results.append(w)
+        p50, p85, p95 = np.percentile(results, [50, 85, 95])
+        with col_gr:
+            st.markdown(f"<p style='color:{color}; font-weight:bold;'>{msg}</p>", unsafe_allow_html=True)
             fig, ax = plt.subplots(figsize=(10, 5))
-            bins = np.arange(min(data), max(data) + 2) - 0.5
-            ax.hist(data, bins=bins, color='#2c3e50', alpha=0.7, edgecolor='black')
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-
-            # Lines
-            ax.axvline(p50, color='orange', linestyle='--', linewidth=2, label=f'50% (Flip Coin): {int(p50)} wks')
-            ax.axvline(p85, color='green', linestyle='--', linewidth=2, label=f'85% (Commercial): {int(p85)} wks')
-            ax.axvline(p95, color='blue', linestyle='--', linewidth=2, label=f'95% (Safe): {int(p95)} wks')
-
-            ax.set_title(f"Delivery Forecast ({sims} runs)")
-            ax.set_xlabel("Weeks to Complete")
-            ax.set_ylabel("Frequency")
-            ax.legend()
-
+            ax.hist(results, bins=range(min(results), max(results) + 2), color='#34495e', alpha=0.7, edgecolor='white')
+            ax.axvline(p50, color='orange', linestyle='--', label=f'Aggressive (50%): {int(p50)} wks')
+            ax.axvline(p85, color='green', linestyle='--', label=f'Commercial (85%): {int(p85)} wks')
+            ax.axvline(p95, color='blue', linestyle='--', label=f'Safe (95%): {int(p95)} wks')
+            ax.legend();
             st.pyplot(fig)
-
-            # --- METRICS & PDF ---
-            pulse_preview = str(pulse[:10]) + "..." if len(pulse) > 10 else str(pulse)
-            stats_text = (
-                f"SCOPE: {scope_min} - {scope_max} items\n"
-                f"TEAM PULSE: {pulse_preview}\n\n"
-                f"Option A (Aggressive): {int(p50)} Weeks (50% Chance)\n"
-                f"Option B (Likely):     {int(p85)} Weeks (85% Chance)\n"
-                f"Option C (Safe):       {int(p95)} Weeks (95% Chance)"
-            )
-
-            col_res1, col_res2 = st.columns(2)
-            with col_res1:
-                st.info(f"**Likely Outcome (85%): {int(p85)} Weeks**")
-            with col_res2:
-                pdf_bytes = create_pdf("Strategy Forecast", stats_text, fig)
-                st.download_button("📄 Download PDF Report", data=pdf_bytes, file_name="forecast_report.pdf",
-                                   mime="application/pdf")
+            stats = {"Scope": f"{s_min}-{s_max}", "P50": f"{int(p50)} Weeks", "P85": f"{int(p85)} Weeks",
+                     "P95": f"{int(p95)} Weeks"}
+            pdf = create_enhanced_pdf(proj_name, "Strategy", stats, {"msg": msg, "score": score}, commentary, fig)
+            st.download_button("📄 Download Audit Report", pdf, f"{proj_name}_audit.pdf")
 
 
-# --- VIEW 3: RISK HORIZON (The Burn-up) ---
+# --- VIEW 3: HORIZON ---
 def show_horizon():
-    st.title("🛤️ The Risk Horizon (Active Project Tracking)")
-    if st.button("← Home"):
-        st.session_state['page'] = 'home'
-        st.rerun()
-
+    st.title("🛤️ Risk Horizon Tracking")
+    if st.button("← Home"): st.session_state['page'] = 'home'; st.rerun()
+    proj_name = st.text_input("Project Name", value="Active Rescue")
     st.markdown("---")
-
-    col_input, col_graph = st.columns([1, 3])
-
-    with col_input:
+    col_in, col_gr = st.columns([1, 3])
+    with col_in:
         st.subheader("1. The Engine")
-
-        # --- TABBED INPUT FOR PULSE ---
-        tab_pulse1, tab_pulse2 = st.tabs(["Manual Pulse", "Upload Pulse"])
-        pulse_data = []
-
-        with tab_pulse1:
-            pulse_str = st.text_input("Pulse (History)", value="2, 5, 4, 6, 4, 3, 5")
+        t1, t2 = st.tabs(["Manual Pulse", "Upload Pulse"])
+        pulse = []
+        with t1:
+            p_str = st.text_area("History", value="4, 5, 3, 6")
             try:
-                pulse_data = [int(x.strip()) for x in pulse_str.split(',') if x.strip()]
+                pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
             except:
-                pulse_data = [1]
-
-        with tab_pulse2:
-            st.markdown("Upload history (e.g. last 50 weeks).")
-            pulse_file = st.file_uploader("Upload Pulse CSV", type=['csv', 'xlsx'], key="pulse_up")
-            if pulse_file:
-                pulse_data = load_data_from_file(pulse_file)
-                if pulse_data: st.success(f"Loaded {len(pulse_data)} weeks.")
+                pulse = [1]
+        with t2:
+            p_file = st.file_uploader("Upload History", type=['csv', 'xlsx'], key="h_up1")
+            if p_file: pulse = load_data_from_file(p_file)
 
         st.subheader("2. The Road")
-
-        # --- TABBED INPUT FOR ACTUALS ---
-        tab_act1, tab_act2 = st.tabs(["Manual Actuals", "Upload Actuals"])
-        project_actuals = []
-
-        with tab_act1:
-            actuals_str = st.text_input("Project Actuals", value="2, 5, 4", placeholder="e.g. 3, 4")
-            if actuals_str.strip() != "":
-                try:
-                    project_actuals = [int(x.strip()) for x in actuals_str.split(',') if x.strip()]
-                except:
-                    project_actuals = []
-
-        with tab_act2:
-            st.markdown("Upload progress (weeks done so far).")
-            actuals_file = st.file_uploader("Upload Actuals CSV", type=['csv', 'xlsx'], key="act_up")
-            if actuals_file:
-                project_actuals = load_data_from_file(actuals_file)
-                if project_actuals: st.success(f"Loaded {len(project_actuals)} weeks.")
+        t3, t4 = st.tabs(["Manual Actuals", "Upload Actuals"])
+        actuals = []
+        with t3:
+            a_str = st.text_input("Project Actuals", value="3, 4, 2")
+            try:
+                actuals = [int(x.strip()) for x in a_str.split(',') if x.strip()]
+            except:
+                actuals = []
+        with t4:
+            a_file = st.file_uploader("Upload Actuals", type=['csv', 'xlsx'], key="h_up2")
+            if a_file: actuals = load_data_from_file(a_file)
 
         total_scope = st.number_input("Total Scope", value=100)
+        commentary = st.text_area("Specialist's Commentary")
         sims = st.number_input("Simulations", value=10000)
-
         run_btn = st.button("🚀 Update Forecast")
 
     if run_btn:
-        with col_graph:
-            # Fallback
-            if not pulse_data: pulse_data = [1]
+        msg, color, score = get_molecular_status(pulse)
+        done, curr_w, horizon = sum(actuals), len(actuals), 40
+        futures = np.zeros((sims, horizon))
+        for i in range(sims):
+            cd, path = done, []
+            for _ in range(horizon):
+                cd += random.choice(pulse if pulse else [1]);
+                path.append(cd)
+            futures[i] = path
 
-            # --- LOGIC ---
-            current_week = len(project_actuals)
-            items_done = sum(project_actuals)
-            remaining_weeks = 30  # Horizon
+        p_05, p_15, p_25, p_50, p_75, p_85, p_95 = np.percentile(futures, [5, 15, 25, 50, 75, 85, 95], axis=0)
 
-            simulation_pool = pulse_data + project_actuals
-            if not simulation_pool: simulation_pool = [1]
-
-            futures = np.zeros((sims, remaining_weeks))
-            for i in range(sims):
-                cumulative = items_done
-                path = []
-                for w in range(remaining_weeks):
-                    cumulative += random.choice(simulation_pool)
-                    path.append(cumulative)
-                futures[i] = path
-
-            # --- PERCENTILES ---
-            # Fan Visuals
-            p_optimistic_95 = np.percentile(futures, 95, axis=0)  # Top of Outer
-            p_pessimistic_05 = np.percentile(futures, 5, axis=0)  # Bottom of Outer (Safe Line)
-            p_fast_75 = np.percentile(futures, 75, axis=0)  # Top of Inner
-            p_slow_25 = np.percentile(futures, 25, axis=0)  # Bottom of Inner
-
-            # Risk Menu Lines
-            p_median_50 = np.percentile(futures, 50, axis=0)  # Aggressive
-            p_comm_15 = np.percentile(futures, 15, axis=0)  # Commercial (85%)
-
-            # --- VISUALIZATION ---
+        with col_gr:
+            st.markdown(f"<p style='color:{color}; font-weight:bold;'>{msg}</p>", unsafe_allow_html=True)
             fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(range(curr_w + 1), [0] + list(np.cumsum(actuals)), color='black', linewidth=3, marker='o',
+                    label='Actuals', zorder=5)
+            ax.axhline(total_scope, color='blue', linestyle='--', label='Scope')
 
-            # 1. Actuals (Black Line)
-            past_weeks = [0] + list(range(1, current_week + 1))
-            cum_actuals = [0]
-            run_sum = 0
-            for v in project_actuals:
-                run_sum += v
-                cum_actuals.append(run_sum)
-            ax.plot(past_weeks, cum_actuals, color='black', linewidth=3, marker='o', label='Actuals', zorder=10)
+            cone_x = range(curr_w, curr_w + horizon)
+            ax.fill_between(cone_x, p_05, p_95, color='green', alpha=0.1, label='Range (5-95%)')
+            ax.fill_between(cone_x, p_25, p_75, color='green', alpha=0.2, label='Likely (25-75%)')
 
-            # 2. Scope (Blue Dashed)
-            all_x = list(range(0, current_week + remaining_weeks + 1))
-            ax.plot(all_x, [total_scope] * len(all_x), color='blue', linestyle='--', label='Scope')
-
-            # 3. The Fan (Clouds)
-            cone_x = [current_week] + list(range(current_week, current_week + remaining_weeks))
-
-            y_out_top = [items_done] + list(p_optimistic_95)
-            y_out_bot = [items_done] + list(p_pessimistic_05)
-            y_in_top = [items_done] + list(p_fast_75)
-            y_in_bot = [items_done] + list(p_slow_25)
-
-            # Outer Cone (Range)
-            ax.fill_between(cone_x, y_out_bot, y_out_top, color='green', alpha=0.1, label='Range (5-95%)')
-            # Inner Cone (Likely)
-            ax.fill_between(cone_x, y_in_bot, y_in_top, color='green', alpha=0.2, label='Likely (25-75%)')
-
-            # Median Line (Center)
-            y_med = [items_done] + list(p_median_50)
-            ax.plot(cone_x, y_med, color='green', linestyle=':', alpha=0.6)
-
-            # --- 4. PRECISE INTERCEPTORS (The Fix) ---
-            # This function finds the EXACT visual crossing point (e.g. Week 26.3)
-            # instead of snapping to the nearest integer.
-            def get_exact_week(y_values, target):
-                for i in range(len(y_values) - 1):
-                    val_start = y_values[i]
-                    val_end = y_values[i + 1]
-
-                    # If the line crosses the target in this segment
-                    if val_start <= target and val_end >= target:
-                        # Linear Interpolation formula
-                        fraction = (target - val_start) / (val_end - val_start + 1e-9)
-                        return (i + current_week) + fraction
+            def get_w(y, t):
+                for i in range(len(y) - 1):
+                    if y[i] <= t and y[i + 1] >= t:
+                        return (i + curr_w) + (t - y[i]) / (y[i + 1] - y[i] + 1e-9)
                 return None
 
-            y_comm = [items_done] + list(p_comm_15)
+            w50, w85, w95 = get_w(p_50, total_scope), get_w(p_15, total_scope), get_w(p_05, total_scope)
 
-            w_50_exact = get_exact_week(y_med, total_scope)  # Aggressive
-            w_85_exact = get_exact_week(y_comm, total_scope)  # Commercial
-            w_95_exact = get_exact_week(y_out_bot, total_scope)  # Safe (Bottom of fan)
-
-            # Plot Vertical Lines at precise locations
-            if w_50_exact:
-                ax.vlines(w_50_exact, 0, total_scope, colors='orange', linestyles='dotted')
-                ax.text(w_50_exact, 10, f"Aggressive\n~W{int(w_50_exact)}", color='orange', ha='center',
-                        fontweight='bold', fontsize=9)
-
-            if w_85_exact:
-                ax.vlines(w_85_exact, 0, total_scope, colors='green', linestyles='dotted')
-                ax.text(w_85_exact, 30, f"Commercial\n~W{int(w_85_exact)}", color='green', ha='center',
-                        fontweight='bold', fontsize=9)
-
-            if w_95_exact:
-                ax.vlines(w_95_exact, 0, total_scope, colors='blue', linestyles='dotted')
-                ax.text(w_95_exact, 50, f"Safe\n~W{int(w_95_exact)}", color='blue', ha='center', fontweight='bold',
+            if w50:
+                ax.vlines(w50, 0, total_scope, colors='orange', linestyles='dotted')
+                ax.text(w50, 10, f"Aggressive\n~W{int(np.ceil(w50))}", color='orange', ha='center', fontweight='bold',
+                        fontsize=9)
+            if w85:
+                ax.vlines(w85, 0, total_scope, colors='green', linestyles='dotted')
+                ax.text(w85, 30, f"Commercial\n~W{int(np.ceil(w85))}", color='green', ha='center', fontweight='bold',
+                        fontsize=9)
+            if w95:
+                ax.vlines(w95, 0, total_scope, colors='blue', linestyles='dotted')
+                ax.text(w95, 50, f"Safe\n~W{int(np.ceil(w95))}", color='blue', ha='center', fontweight='bold',
                         fontsize=9)
 
-            ax.set_title(f"Risk Horizon (Week {current_week})")
-            ax.legend(loc='upper left')
+            ax.set_title(f"Risk Horizon: {proj_name}");
+            ax.legend(loc='upper left');
             st.pyplot(fig)
 
-            # --- METRICS ---
             st.subheader("The Risk Menu")
             m1, m2, m3 = st.columns(3)
-
-            # We display the rounded-up integer for the user (Business Dates),
-            # but the graph uses the exact float for alignment.
-            def fmt_week(w):
-                return f"Week {int(np.ceil(w))}" if w else "N/A"
-
             with m1:
-                st.metric("Option A (Aggressive)", fmt_week(w_50_exact), "50% Chance")
+                st.metric("Aggressive (P50)", f"Week {int(np.ceil(w50)) if w50 else 'N/A'}")
+                st.markdown("<p style='color:orange; font-size: 14px;'>↑ 50% Chance</p>", unsafe_allow_html=True)
             with m2:
-                st.metric("Option B (Commercial)", fmt_week(w_85_exact), "85% Chance")
+                st.metric("Commercial (P85)", f"Week {int(np.ceil(w85)) if w85 else 'N/A'}")
+                st.markdown("<p style='color:green; font-size: 14px;'>↑ 85% Chance</p>", unsafe_allow_html=True)
             with m3:
-                st.metric("Option C (Safe)", fmt_week(w_95_exact), "95% Chance")
+                st.metric("Safe (P95)", f"Week {int(np.ceil(w95)) if w95 else 'N/A'}")
+                st.markdown("<p style='color:blue; font-size: 14px;'>↑ 95% Chance</p>", unsafe_allow_html=True)
 
-            # --- PDF REPORT ---
-            pulse_preview = str(pulse_data[:10]) + "..." if len(pulse_data) > 10 else str(pulse_data)
-            stats_text = (
-                f"PROJECT STATUS: Week {current_week}\n"
-                f"ITEMS DONE: {items_done} / {total_scope}\n"
-                f"PULSE DATA: {pulse_preview}\n\n"
-                f"Option A (Aggressive): {fmt_week(w_50_exact)} (50% Chance)\n"
-                f"Option B (Commercial): {fmt_week(w_85_exact)} (85% Chance)\n"
-                f"Option C (Safe):       {fmt_week(w_95_exact)} (95% Chance)"
-            )
-
-            pdf_bytes = create_pdf("Risk Horizon Tracking", stats_text, fig)
-            st.download_button("📄 Download PDF Report", data=pdf_bytes, file_name="risk_horizon_report.pdf",
-                               mime="application/pdf")
+            stats = {"Done": f"{done}/{total_scope}", "Commercial (P85)": f"Week {int(np.ceil(w85)) if w85 else 'N/A'}"}
+            pdf = create_enhanced_pdf(proj_name, "Tactical", stats, {"msg": msg, "score": score}, commentary, fig)
+            st.download_button("📄 Download Audit Report", pdf, f"{proj_name}_rescue.pdf")
 
 
-# --- MAIN APP CONTROLLER ---
-if 'page' not in st.session_state:
-    st.session_state['page'] = 'home'
-
+# --- MAIN CONTROLLER ---
+if 'page' not in st.session_state: st.session_state['page'] = 'home'
 if st.session_state['page'] == 'home':
     show_home()
 elif st.session_state['page'] == 'forecast':
