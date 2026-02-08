@@ -24,6 +24,30 @@ st.markdown("""
 
 
 # --- GOVERNANCE HELPERS ---
+def apply_actuarial_filters(data, apply_cap=True):
+    """Applies Pillar 2: Outlier Capping and data cleaning."""
+    if not data: return [1]
+
+    clean_data = np.array(data)
+    if apply_cap and len(clean_data) > 3:
+        mean = np.mean(clean_data)
+        std = np.std(clean_data)
+        # Pillar 2: Outlier Capping (2 Standard Deviations)
+        threshold = mean - (2 * std)
+        tenth_percentile = np.percentile(clean_data, 10)
+        clean_data = np.where(clean_data < threshold, tenth_percentile, clean_data)
+
+    return clean_data.tolist()
+
+
+def calculate_defect_tax(raw_items, p0, p1, p2):
+    """Applies Pillar 2: Severity-Weighted Throughput."""
+    # Weights: P0=5x, P1=3x, P2/P3=1x (Simplified standard as 1x for P2/P3 per instructions)
+    tax = (p0 * 5) + (p1 * 3) + (p2 * 1)
+    net_pulse = raw_items - tax
+    return max(0, net_pulse)
+
+
 def get_molecular_status(data):
     if not data: return "No Data", "grey", 0
     avg = np.mean(data)
@@ -79,11 +103,10 @@ def create_enhanced_pdf(project_name, report_type, stats_dict, gate_info, commen
     pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
 
-    # Section 1: Integrity (Fixed Alignment)
+    # Section 1: Integrity
     pdf.set_font("helvetica", 'B', 12)
     pdf.cell(190, 10, "1. DATA INTEGRITY & GOVERNANCE", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("helvetica", '', 11)
-    # Using specific widths to ensure Score stays on the same line but justified right
     pdf.cell(140, 8, f"Status: {clean_for_pdf(gate_info['msg'])}")
     pdf.cell(50, 8, f"Score: {gate_info['score']}/100", align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(5)
@@ -145,18 +168,28 @@ def show_forecast():
         st.subheader("1. Scoping")
         s_min = st.number_input("Min Items", value=20)
         s_max = st.number_input("Max Items", value=30)
-        st.subheader("2. Capability")
+
+        st.subheader("2. Capability Audit")
+        with st.expander("Apply Defect Tax (Pillar 2)", expanded=False):
+            p0 = st.number_input("P0 (Critical) Defects", value=0)
+            p1 = st.number_input("PHigh (High) Defects", value=0)
+            p2 = st.number_input("Standard Defects", value=0)
+
         t1, t2 = st.tabs(["Manual Pulse", "Upload Pulse"])
-        pulse = []
+        raw_pulse = []
         with t1:
             p_str = st.text_area("Pulse History", value="4, 5, 2, 6, 0, 4")
             try:
-                pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
+                raw_pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
             except:
-                pulse = [1]
+                raw_pulse = [1]
         with t2:
             p_file = st.file_uploader("Upload Pulse", type=['csv', 'xlsx'], key="f_up")
-            if p_file: pulse = load_data_from_file(p_file)
+            if p_file: raw_pulse = load_data_from_file(p_file)
+
+        # Apply Pillar 2 Logic
+        net_pulse = [calculate_defect_tax(x, p0, p1, p2) for x in raw_pulse]
+        final_pulse = apply_actuarial_filters(net_pulse)
 
         commentary = st.text_area("Specialist's Commentary")
         allow_zeros = st.checkbox("Include Black Swans (0s)", value=True)
@@ -164,13 +197,13 @@ def show_forecast():
         run_btn = st.button("🚀 Run Monte Carlo")
 
     if run_btn:
-        if not allow_zeros: pulse = [x for x in pulse if x > 0]
-        msg, color, score = get_molecular_status(pulse)
+        if not allow_zeros: final_pulse = [x for x in final_pulse if x > 0]
+        msg, color, score = get_molecular_status(final_pulse)
         results = []
         for _ in range(sims):
             tot, w = random.randint(s_min, s_max), 0
             while tot > 0:
-                tot -= random.choice(pulse if pulse else [1]);
+                tot -= random.choice(final_pulse if final_pulse else [1]);
                 w += 1
             results.append(w)
         p50, p85, p95 = np.percentile(results, [50, 85, 95])
@@ -198,17 +231,26 @@ def show_horizon():
     col_in, col_gr = st.columns([1, 3])
     with col_in:
         st.subheader("1. The Engine")
+        with st.expander("Apply Defect Tax (Pillar 2)", expanded=False):
+            p0 = st.number_input("P0 (Critical) Defects", value=0, key="h_p0")
+            p1 = st.number_input("PHigh (High) Defects", value=0, key="h_p1")
+            p2 = st.number_input("Standard Defects", value=0, key="h_p2")
+
         t1, t2 = st.tabs(["Manual Pulse", "Upload Pulse"])
-        pulse = []
+        raw_pulse = []
         with t1:
             p_str = st.text_area("History", value="4, 5, 3, 6")
             try:
-                pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
+                raw_pulse = [int(x.strip()) for x in p_str.split(',') if x.strip()]
             except:
-                pulse = [1]
+                raw_pulse = [1]
         with t2:
             p_file = st.file_uploader("Upload History", type=['csv', 'xlsx'], key="h_up1")
-            if p_file: pulse = load_data_from_file(p_file)
+            if p_file: raw_pulse = load_data_from_file(p_file)
+
+        # Apply Pillar 2 Logic
+        net_pulse = [calculate_defect_tax(x, p0, p1, p2) for x in raw_pulse]
+        final_pulse = apply_actuarial_filters(net_pulse)
 
         st.subheader("2. The Road")
         t3, t4 = st.tabs(["Manual Actuals", "Upload Actuals"])
@@ -229,13 +271,13 @@ def show_horizon():
         run_btn = st.button("🚀 Update Forecast")
 
     if run_btn:
-        msg, color, score = get_molecular_status(pulse)
+        msg, color, score = get_molecular_status(final_pulse)
         done, curr_w, horizon = sum(actuals), len(actuals), 40
         futures = np.zeros((sims, horizon))
         for i in range(sims):
             cd, path = done, []
             for _ in range(horizon):
-                cd += random.choice(pulse if pulse else [1]);
+                cd += random.choice(final_pulse if final_pulse else [1]);
                 path.append(cd)
             futures[i] = path
 
